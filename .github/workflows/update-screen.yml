@@ -1,0 +1,35 @@
+name: Update Kindle screen
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"   # every 6 hours (UTC)
+  workflow_dispatch:         # lets you run it by hand from the Actions tab
+
+permissions:
+  contents: write
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq fonts-dejavu-core
+          pip install pillow tzdata
+
+      - name: Render image
+        run: python mammoth_screen.py --out mammoth.png
+
+      - name: Save image if it changed
+        run: |
+          git config user.name "mammoth-screen-bot"
+          git config user.email "mammoth-screen-bot@users.noreply.github.com"
+          git add mammoth.png
+          git diff --cached --quiet || (git commit -m "Update screen" && git push)
