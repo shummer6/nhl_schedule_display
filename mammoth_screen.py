@@ -27,6 +27,8 @@ LOCAL_TZ = ZoneInfo("America/Denver")
 SCHEDULE_URL = f"https://api-web.nhle.com/v1/club-schedule-season/{TEAM}/now"
 UPCOMING_STATES = {"FUT", "PRE", "LIVE", "CRIT"}
 LIVE_STATES = {"LIVE", "CRIT"}
+COMPLETED_STATES = {"OFF", "FINAL"}
+REGULAR_SEASON_GAME_TYPE = 2
 
 BLACK, DARK, MID, WHITE = 0, 55, 120, 255
 
@@ -88,6 +90,32 @@ def upcoming_games(games, now):
     return out
 
 
+def season_record(games, now):
+    """Return Utah's regular-season record as (wins, losses, OT losses)."""
+    wins = losses = ot_losses = 0
+    for game in games:
+        if game.get("gameType") != REGULAR_SEASON_GAME_TYPE:
+            continue
+        if game.get("gameState") not in COMPLETED_STATES:
+            continue
+        if start_utc(game) > now:
+            continue
+
+        away = game.get("awayTeam", {})
+        home = game.get("homeTeam", {})
+        utah, opponent = (away, home) if away.get("abbrev") == TEAM else (home, away)
+        if "score" not in utah or "score" not in opponent:
+            continue
+
+        if utah["score"] > opponent["score"]:
+            wins += 1
+        elif game.get("gameOutcome", {}).get("lastPeriodType") in {"OT", "SO"}:
+            ot_losses += 1
+        else:
+            losses += 1
+    return wins, losses, ot_losses
+
+
 def side_and_opponent(game):
     """Return ('AT' or 'VS', opponent team dict) from Utah's point of view."""
     if game["awayTeam"]["abbrev"] == TEAM:
@@ -142,7 +170,7 @@ def centered(draw, width, y, text, size, fill, max_w):
     return y + int(font.size * 1.12)
 
 
-def render(games, now_utc, size):
+def render(games, record, now_utc, size):
     width, height = size
     pad = 40
     inner = width - 2 * pad
@@ -150,10 +178,14 @@ def render(games, now_utc, size):
     d = ImageDraw.Draw(img)
     now_local = now_utc.astimezone(LOCAL_TZ)
 
-    # header band
-    d.rectangle((0, 0, width, 110), fill=BLACK)
-    header_font = fit_font(d, "UTAH MAMMOTH", inner, 64)
-    d.text((width / 2, 55), "UTAH MAMMOTH", font=header_font, fill=WHITE, anchor="mm")
+    # Header band: team identity plus the conventional NHL W-L-OT record.
+    d.rectangle((0, 0, width, 132), fill=BLACK)
+    header_font = fit_font(d, "UTAH MAMMOTH", inner, 54)
+    d.text((width / 2, 42), "UTAH MAMMOTH", font=header_font, fill=WHITE, anchor="mm")
+    wins, losses, ot_losses = record
+    record_text = f"RECORD   {wins} W  |  {losses} L  |  {ot_losses} OT"
+    record_font = fit_font(d, record_text, inner, 30)
+    d.text((width / 2, 100), record_text, font=record_font, fill=WHITE, anchor="mm")
 
     footer = f"Updated {now_local:%b} {now_local.day}"
 
@@ -168,15 +200,15 @@ def render(games, now_utc, size):
     prefix, opp = side_and_opponent(game)
     live = game.get("gameState") in LIVE_STATES
 
-    y = 128
+    y = 140
     y = centered(d, width, y, "NEXT GAME", 28, MID, inner)
     y = centered(d, width, y + 4, prefix, 54, DARK, inner)
     y = centered(d, width, y, opp["placeName"]["default"].upper(), 104, BLACK, inner)
     y = centered(d, width, y, opp["commonName"]["default"].upper(), 84, BLACK, inner)
 
-    y += 14
+    y += 8
     d.line((pad, y, width - pad, y), fill=BLACK, width=3)
-    y += 22
+    y += 16
 
     y = centered(d, width, y, fmt_date(start_local), 84, BLACK, inner)
     y = centered(d, width, y + 4, f"{fmt_time(start_local)} MT", 66, BLACK, inner)
@@ -187,10 +219,10 @@ def render(games, now_utc, size):
     text_w = d.textlength(chip_text, font=chip_font)
     chip_h = int(chip_font.size * 1.5)
     x0 = (width - text_w) / 2 - 32
-    y += 14
+    y += 10
     d.rounded_rectangle((x0, y, width - x0, y + chip_h), radius=chip_h // 2, fill=BLACK)
     d.text((width / 2, y + chip_h / 2), chip_text, font=chip_font, fill=WHITE, anchor="mm")
-    y += chip_h + 16
+    y += chip_h + 12
 
     venue = game.get("venue", {}).get("default", "")
     if venue:
@@ -201,12 +233,12 @@ def render(games, now_utc, size):
 
     # up next list
     if rest:
-        y += 10
+        y += 8
         d.line((pad, y, width - pad, y), fill=MID, width=2)
-        y += 12
+        y += 8
         d.text((pad, y), "UP NEXT", font=load_font(24), fill=MID, anchor="lt")
-        y += 36
-        small = load_font(32)
+        y += 32
+        small = load_font(30)
         for g in rest:
             g_local = start_utc(g).astimezone(LOCAL_TZ)
             g_prefix, g_opp = side_and_opponent(g)
@@ -219,7 +251,7 @@ def render(games, now_utc, size):
                 , fill=BLACK
                 , anchor="rt"
             )
-            y += 40
+            y += 36
 
     d.text((width / 2, height - 18), footer, font=load_font(20), fill=MID, anchor="mm")
     return img
@@ -247,11 +279,16 @@ def main():
         print(f"Could not load schedule: {exc}", file=sys.stderr)
         return 1
 
+    record = season_record(games, now)
     upcoming = upcoming_games(games, now)
-    img = render(upcoming, now, (width, height))
+    img = render(upcoming, record, now, (width, height))
     img.save(args.out, format="PNG")
     nxt = upcoming[0]["startTimeUTC"] if upcoming else "none"
-    print(f"Wrote {args.out} ({width}x{height}); next game start (UTC): {nxt}")
+    print(
+        f"Wrote {args.out} ({width}x{height}); "
+        f"record: {record[0]}-{record[1]}-{record[2]}; "
+        f"next game start (UTC): {nxt}"
+    )
     return 0
 
 
