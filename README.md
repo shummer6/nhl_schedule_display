@@ -1,3 +1,3 @@
 # Mammoth Schedule Display (Kindle Paperwhite)
 
-Renders the next 3 upcoming games for the utah mammoth along with the current season wins/loss totals
+Shows the upcoming game for the utah mammoth along with the teams standings within the central division
